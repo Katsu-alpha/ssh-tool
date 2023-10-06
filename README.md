@@ -28,7 +28,7 @@ ssh-tool 192.168.1.100-105
 
 ### Commands file syntax
 
-You can list the commands as below.
+You can list the commands as below. Ssh-tool will run each command only once in order.
 ```
 show version
 show clock
@@ -36,10 +36,12 @@ no paging
 show running-conf
 ```
 
-You can specify the interval before each command.
+You can specify the interval before each command to run the command repeatedly.
+You can also specify the number of iteration.
 ```
-30,show user
-1m,show datapath session
+30,show user  => run every 30 seconds, indefinitely
+1m,show datapath session   => run every 1 minutes, indefinitely
+10;5,show clock   => run every 10 seconds, 5 times only
 ```
 
 You can use NAME=VAR. You can use `:upper` or `:lower` decorator.
