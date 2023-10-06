@@ -353,7 +353,7 @@ var cmdfile string
 func main() {
 	//var hostKey ssh.PublicKey
 	log := NewMyLogger(warnLevel, "Main")
-	EnableVirtualTerminal(os.Stdout.Fd())
+	platformInit()
 
 	// parse flags
 	flag.StringVar(&passwd, "p", "", "admin password")
