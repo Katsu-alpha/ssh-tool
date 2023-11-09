@@ -1,7 +1,13 @@
 package main
 
 // TODO:
+// 複数パラメータ
 // 自動再接続
+// パラメータをコマンドラインで指定
+//
+//	History
+//	ver 1.0		initial release
+//	ver 1.1		"[interval]" 指定機能追加
 
 import (
 	"bufio"
@@ -24,9 +30,10 @@ import (
 )
 
 const timeout = 10
+const version = "1.1"
 var errReadTimeout = errors.New("rx timed out")
 
-// コマンド送信
+// コマンド送信し、プロンプトを待ち、出力結果を返す
 func sendCmd(w *worker, cmd string) (string, error) {
 	_, err := w.in.Write([]byte(cmd + "\n"))
 	if err != nil {
@@ -82,7 +89,7 @@ func readCli(w *worker) (string, error) {
 
 // 現在時刻を示す文字列
 func getnowstr() string {
-	return time.Now().Format("2006-01-02 15:04:05.999 -0700")
+	return time.Now().Format("2006-01-02 15:04:05.000 -0700")
 }
 
 // --------------------------------------------------------------------------------
@@ -226,6 +233,15 @@ func doSsh(host string, log *MyLogger, cancelCh chan struct{}) {
 		return
 	}
 
+	// send "no paging"
+	if !isIap {
+		_, e = sendCmd(&w, "no paging")
+		if e != nil {
+			log.Error("sendCmd('no paging') failed: ", e)
+			return
+		}
+	}
+
 	if duration > 0 {
 		endtime = time.Now().Unix() + duration
 	} else {
@@ -355,6 +371,9 @@ func main() {
 	log := NewMyLogger(warnLevel, "Main")
 	platformInit()
 
+	// print banner
+	fmt.Printf("ssh-tool version %v\n", version)
+
 	// parse flags
 	flag.StringVar(&passwd, "p", "", "admin password")
 	flag.StringVar(&cmdfile, "c", "commands.txt", "command file")
@@ -384,7 +403,7 @@ func main() {
 	}
 
 	if len(args) == 0 {
-		log.Error("No host specified")
+		fmt.Println("Please specify device IP address(es).")
 		os.Exit(1)
 	}
 	if passwd == "" {
@@ -420,15 +439,38 @@ func main() {
 	sc := bufio.NewScanner(f)
 	valMap = make(map[string]string)
 	var l, itvl, cmd string
-	var i, idx, iter, mulsec, num int
+	var i, idx, iter, mulsec, num, def_int int
+	var m []string
 	re := regexp.MustCompile(`^(\d+[mh]?),|^(\d+[mh]?);(\d+),`)
+	re2 := regexp.MustCompile(`^\[interval *=? *(\d+[mh]?)\]`)
 	for sc.Scan() {
 		l = strings.Trim(sc.Text(), " \t\r\n")
 		if l == "" || l[0] == '#' { continue }		// skip null lines/comments
-		
+
+		// [interval=30] 指定
+		m = re2.FindStringSubmatch(l)
+		if m != nil {
+			itvl = m[1]
+			mulsec = 1
+			if strings.HasSuffix(itvl, "m") {
+				itvl = itvl[:len(itvl)-1]
+				mulsec = 60
+			} else if strings.HasSuffix(itvl, "h") {
+				itvl = itvl[:len(itvl)-1]
+				mulsec = 3600
+			}
+			def_int, err = strconv.Atoi(itvl)
+			if err != nil {
+				log.Error("invalid interval format: ", l)
+				os.Exit(1)
+			}
+			def_int *= mulsec
+			continue
+		}
+
+		// VARNAME=VALUE
 		idx = strings.Index(l, "=")
 		if idx != -1 {
-			// parse VARNAME=VALUE
 			name  := strings.Trim(l[:idx], " \t\r\n")
 			value := strings.Trim(l[idx+1:], " \t\r\n")
 			if len(name) == 0 || len(value) == 0 {
@@ -440,11 +482,19 @@ func main() {
 		}
 
 		l = subst(l, log)	// process $VAR and ${VAR}
-		m := re.FindStringSubmatch(l)
-		if len(m) == 0 {	// interval指定なし、一度だけ実行
+
+		m = re.FindStringSubmatch(l)
+		if len(m) == 0 {	// interval指定なし
 			cmd = l
-			i = 0
-			iter = 1
+			if def_int == 0 {
+				// 一度だけ実行
+				i = 0
+				iter = 1
+			} else {
+				// def_int 間隔で実行
+				i = def_int
+				iter = -1
+			}
 		} else {
 			itvl = m[1]
 			iter = -1
