@@ -36,6 +36,14 @@ no paging
 show running-conf
 ```
 
+You can specify interval using the syntax below.
+```
+[interval=30]
+show ap active       => this command is issued every 30 seconds
+[interval=2m]
+show ap debug client-table   => this command is issued every 2 minute
+```
+
 You can specify the interval before each command to run the command repeatedly.
 You can also specify the number of iteration.
 ```
