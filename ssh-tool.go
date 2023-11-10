@@ -218,6 +218,7 @@ func doSsh(host string, log *MyLogger, cancelCh chan struct{}) {
 		return
 	}
 	log.Info("Connection established for " + host)
+	fmt.Println("Connection established for " + host)
 
 	var r string
 	var now, endtime int64
@@ -349,6 +350,8 @@ func ipaddrParser(ip string) ([]string, error) {
 	return ips, nil
 }
 //
+//  ------------------------------------------------------------------------------------------------
+//		main
 //  ------------------------------------------------------------------------------------------------
 //
 
@@ -500,7 +503,7 @@ func main() {
 			iter = -1
 			if itvl == "" {
 				itvl = m[2]
-				iter, err = strconv.Atoi(m[3])
+				iter, _ = strconv.Atoi(m[3])
 			}
 			cmd = strings.Trim(l[len(m[0]):], " \t\r\n")
 			mulsec = 1
@@ -523,11 +526,14 @@ func main() {
 		num ++
 	}
 
+	// channel
 	cancelCh := make(chan struct{})
 	completedCh := make(chan struct{})
 	interruptCh := make(chan os.Signal, 1)
-	signal.Notify(interruptCh, os.Interrupt)
+	signal.Notify(interruptCh, os.Interrupt)	// catch Ctrl+C (SIGINT) interrupt
+	fmt.Println("Starting ssh sessions. Press Ctrl+C to abort.")
 
+	// start ssh session
 	go func() {
 		for i, ip := range iplist {
 			wg.Add(1)
