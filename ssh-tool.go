@@ -8,6 +8,7 @@ package main
 //	History
 //	ver 1.0		initial release
 //	ver 1.1		"[interval]" 指定機能追加
+//	ver 1.2		-u option, DNS name
 
 import (
 	"bufio"
@@ -30,7 +31,7 @@ import (
 )
 
 const timeout = 10
-const version = "1.1"
+const version = "1.2"
 var errReadTimeout = errors.New("rx timed out")
 
 // コマンド送信し、プロンプトを待ち、出力結果を返す
@@ -142,11 +143,11 @@ func doSsh(host string, log *MyLogger, cancelCh chan struct{}) {
 
 	// sanity check
 	host = strings.Trim(host, " \t\r\n")
-	m, _ := regexp.MatchString(`^\d+\.\d+\.\d+\.\d+$`, host)
-	if !m {
-		log.Error("invalid host: " + host)
-		return
-	}
+	//m, _ := regexp.MatchString(`^\d+\.\d+\.\d+\.\d+$`, host)
+	//if !m {
+	//	log.Error("invalid host: " + host)
+	//	return
+	//}
 
 	// 記録ファイル作成
 	fn := "log_" + host + "_" + time.Now().Format("20060102") + ".txt"
@@ -172,7 +173,7 @@ func doSsh(host string, log *MyLogger, cancelCh chan struct{}) {
 
 	// ssh 接続パラメータ
 	config := &ssh.ClientConfig{
-		User: "admin",
+		User: username,
 		Auth: []ssh.AuthMethod{ ssh.Password(passwd) },
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 		Timeout: timeout * time.Second,		// connection timeout. (not read timeout)
@@ -180,7 +181,7 @@ func doSsh(host string, log *MyLogger, cancelCh chan struct{}) {
 
 	// connect to host
 	host += ":22"
-	log.Debug("Connecting to " + host + "...")
+	log.Debug("Connecting to " + host + " with user '" + username + "'...")
 	client, err := ssh.Dial("tcp", host, config)
 	if err != nil {
 		log.Error("Connection failed: ", err)
@@ -362,7 +363,7 @@ type cmdInfo struct {
 }
 
 var wg sync.WaitGroup
-var passwd string
+var username, passwd string
 var cmdList []cmdInfo
 var valMap map[string]string
 var duration int64
@@ -378,7 +379,8 @@ func main() {
 	fmt.Printf("ssh-tool version %v\n", version)
 
 	// parse flags
-	flag.StringVar(&passwd, "p", "", "admin password")
+	flag.StringVar(&username, "u", "admin", "username")
+	flag.StringVar(&passwd, "p", "", "password")
 	flag.StringVar(&cmdfile, "c", "commands.txt", "command file")
 	flag.Int64Var(&duration, "d", 0, "duration in seconds (0: indefinitely)")
 	flag.BoolVar(&isIap, "iap", false, "target host is Instant AP")
@@ -423,10 +425,12 @@ func main() {
 	for _, ip := range args {
 		ips, err := ipaddrParser(ip)
 		if err != nil {
-			log.Error("invalid IP: ", ip)
-			os.Exit(1)
+			// log.Error("invalid IP: ", ip)
+			// os.Exit(1)
+			iplist = append(iplist, ip)
+		} else {
+			iplist = append(iplist, ips...)
 		}
-		iplist = append(iplist, ips...)
 	}
 
 	log.Infof("%v hosts specified.", len(iplist))
