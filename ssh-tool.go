@@ -1,14 +1,16 @@
 package main
 
 // TODO:
-// 複数パラメータ
+// 複数値をもつ変数
 // 自動再接続
-// パラメータをコマンドラインで指定
+// AP CLI 接続対応
+// 日付をまたいだ場合、ログファイル分割
 //
 //	History
 //	ver 1.0		initial release
 //	ver 1.1		"[interval]" 指定機能追加
 //	ver 1.2		-u option, DNS name
+//	ver 1.3		-f <logfile> option, -v <name>=<val> option
 
 import (
 	"bufio"
@@ -31,7 +33,8 @@ import (
 )
 
 const timeout = 10
-const version = "1.2"
+const version = "1.3"
+
 var errReadTimeout = errors.New("rx timed out")
 
 // コマンド送信し、プロンプトを待ち、出力結果を返す
@@ -48,21 +51,21 @@ func sendCmd(w *worker, cmd string) (string, error) {
 
 // Prompt が返るか、EOF になるまでバッファに読み込み、文字列にして返す
 type readresp struct {
-	n int
+	n   int
 	err error
 }
 
 func readCli(w *worker) (string, error) {
 	w.buf.Reset()
 	var e error
-	LOOP:
+LOOP:
 	for {
 		go func() {
 			n, err := w.out.Read(w.tmpbuf)
 			if n > 0 {
 				w.buf.Write(w.tmpbuf[:n])
 			}
-			w.respCh <-&readresp{n, err}
+			w.respCh <- &readresp{n, err}
 		}()
 		select {
 		case resp := <-w.respCh:
@@ -79,9 +82,9 @@ func readCli(w *worker) (string, error) {
 			break
 		}
 		buf := w.buf.Bytes()
-		if (isIap && bytes.HasSuffix(buf, []byte("# "))) ||			// IAP prompt
-			(!isIap && bytes.HasSuffix(buf, []byte(") #"))) ||		// MD prompt
-			(!isIap && bytes.HasSuffix(buf, []byte(") *#"))) {		// MD prompt with crashinfo
+		if (isIap && bytes.HasSuffix(buf, []byte("# "))) || // IAP prompt
+			(!isIap && bytes.HasSuffix(buf, []byte(") #"))) || // MD prompt
+			(!isIap && bytes.HasSuffix(buf, []byte(") *#"))) { // MD prompt with crashinfo
 			break
 		}
 	}
@@ -95,16 +98,16 @@ func getnowstr() string {
 
 // --------------------------------------------------------------------------------
 type schedule struct {
-	epoch int64
+	epoch  int64
 	cmdidx int
-	ctr int
+	ctr    int
 }
 
 type worker struct {
-	in io.Writer
-	out io.Reader
-	log *MyLogger
-	buf bytes.Buffer
+	in     io.Writer
+	out    io.Reader
+	log    *MyLogger
+	buf    bytes.Buffer
 	tmpbuf []byte
 	respCh chan *readresp
 }
@@ -130,14 +133,12 @@ func (qp *heapq) Pop() interface{} {
 	return ret
 }
 
-//
 // ssh goroutine
-//
 func doSsh(host string, log *MyLogger, cancelCh chan struct{}) {
 	defer wg.Done()
 
 	var w worker
-	w.log = log		// logger for this thread
+	w.log = log // logger for this thread
 	w.respCh = make(chan *readresp, 1)
 	w.tmpbuf = make([]byte, 64*1024)
 
@@ -150,7 +151,12 @@ func doSsh(host string, log *MyLogger, cancelCh chan struct{}) {
 	//}
 
 	// 記録ファイル作成
-	fn := "log_" + host + "_" + time.Now().Format("20060102") + ".txt"
+	var fn string
+	if logfile == "" {
+		fn = "log_" + host + "_" + time.Now().Format("20060102") + ".txt"
+	} else {
+		fn = logfile
+	}
 	fout, err := os.OpenFile(fn, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		log.Error("Can't create log file: ", err)
@@ -167,16 +173,16 @@ func doSsh(host string, log *MyLogger, cancelCh chan struct{}) {
 
 	// schedule 初期化
 	q := make(heapq, 0)
-	for i:=0; i<len(cmdList); i++ {
-		heap.Push(&q, schedule{ epoch: 0, cmdidx: i, ctr: 1 })
+	for i := 0; i < len(cmdList); i++ {
+		heap.Push(&q, schedule{epoch: 0, cmdidx: i, ctr: 1})
 	}
 
 	// ssh 接続パラメータ
 	config := &ssh.ClientConfig{
-		User: username,
-		Auth: []ssh.AuthMethod{ ssh.Password(passwd) },
+		User:            username,
+		Auth:            []ssh.AuthMethod{ssh.Password(passwd)},
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Timeout: timeout * time.Second,		// connection timeout. (not read timeout)
+		Timeout:         timeout * time.Second, // connection timeout. (not read timeout)
 	}
 
 	// connect to host
@@ -185,7 +191,7 @@ func doSsh(host string, log *MyLogger, cancelCh chan struct{}) {
 	client, err := ssh.Dial("tcp", host, config)
 	if err != nil {
 		log.Error("Connection failed: ", err)
-		fmt.Fprintln(bout, "Connection failed: " + err.Error())
+		fmt.Fprintln(bout, "Connection failed: "+err.Error())
 		return
 	}
 	defer client.Close()
@@ -193,19 +199,19 @@ func doSsh(host string, log *MyLogger, cancelCh chan struct{}) {
 	session, err := client.NewSession()
 	if err != nil {
 		log.Error("Can't create session: ", err)
-		fmt.Fprintln(bout, "Can't create session: " + err.Error())
+		fmt.Fprintln(bout, "Can't create session: "+err.Error())
 		return
 	}
 	defer session.Close()
 
 	// configure terminal mode
 	modes := ssh.TerminalModes{
-		ssh.ECHO:          1,     // 0: suppress echo
+		ssh.ECHO: 1, // 0: suppress echo
 	}
 	// start terminal session
 	if err := session.RequestPty("xterm", 50, 80, modes); err != nil {
 		log.Error("RequestPty(): ", err)
-		fmt.Fprintln(bout, "RequestPty(): " + err.Error())
+		fmt.Fprintln(bout, "RequestPty(): "+err.Error())
 		return
 	}
 
@@ -215,7 +221,7 @@ func doSsh(host string, log *MyLogger, cancelCh chan struct{}) {
 	// start remote shell
 	if err := session.Shell(); err != nil {
 		log.Error("Shell(): ", err)
-		fmt.Fprintln(bout, "Shell(): " + err.Error())
+		fmt.Fprintln(bout, "Shell(): "+err.Error())
 		return
 	}
 	log.Info("Connection established for " + host)
@@ -231,7 +237,7 @@ func doSsh(host string, log *MyLogger, cancelCh chan struct{}) {
 	_, e = readCli(&w)
 	if e != nil {
 		log.Error("readCli: " + e.Error())
-		fmt.Fprintln(bout, "Error: " + e.Error())
+		fmt.Fprintln(bout, "Error: "+e.Error())
 		return
 	}
 
@@ -247,17 +253,17 @@ func doSsh(host string, log *MyLogger, cancelCh chan struct{}) {
 	if duration > 0 {
 		endtime = time.Now().Unix() + duration
 	} else {
-		endtime = 1<<63 - 1		// int64 maximum
+		endtime = 1<<63 - 1 // int64 maximum
 	}
 
-	LOOP:
+LOOP:
 	for len(q) > 0 {
 		now = time.Now().Unix()
 
 		// 直近のスケジュール(epoch最小のもの)をPop
 		sched = heap.Pop(&q).(schedule)
 		//log.Debugf("got cmdset: epoch:%v, interval:%v, ctr:%v, number of cmds:%v", cmdset.epoch, cmdset.cmd, cmdset.ctr, len(cmdMap[cmdset.cmd]))
-		if sched.epoch == 0 {	// first time
+		if sched.epoch == 0 { // first time
 			sched.epoch = now
 		}
 		cmdinfo = cmdList[sched.cmdidx]
@@ -265,7 +271,7 @@ func doSsh(host string, log *MyLogger, cancelCh chan struct{}) {
 		if cmdinfo.itvl > 0 && (cmdinfo.iter <= 0 || (cmdinfo.iter > 0 && sched.ctr < cmdinfo.iter)) {
 			nexttime := sched.epoch + cmdinfo.itvl
 			if nexttime <= endtime {
-				heap.Push(&q, schedule{ epoch: nexttime, cmdidx: sched.cmdidx, ctr: sched.ctr+1 })
+				heap.Push(&q, schedule{epoch: nexttime, cmdidx: sched.cmdidx, ctr: sched.ctr + 1})
 			}
 		}
 		// epoch 時刻まで待つ
@@ -286,20 +292,20 @@ func doSsh(host string, log *MyLogger, cancelCh chan struct{}) {
 		r, e = sendCmd(&w, cmdinfo.cmd)
 		if e != nil {
 			log.Error("sendCmd() failed: ", e)
-			fmt.Fprintln(bout, "failed to send command: " + e.Error())
+			fmt.Fprintln(bout, "failed to send command: "+e.Error())
 			break LOOP
 		}
 
 		// コマンドログ記録
 		fmt.Fprintln(bout, "\n\n/////")
-		fmt.Fprintln(bout, "///// Begin Time: " + cmdstart)
-		fmt.Fprintln(bout, "///// End Time:   " + getnowstr())
-		fmt.Fprintf(bout,  "///// Inteval: %v sec, Iteration: #%v\n", cmdinfo.itvl, sched.ctr)
+		fmt.Fprintln(bout, "///// Begin Time: "+cmdstart)
+		fmt.Fprintln(bout, "///// End Time:   "+getnowstr())
+		fmt.Fprintf(bout, "///// Inteval: %v sec, Iteration: #%v\n", cmdinfo.itvl, sched.ctr)
 		fmt.Fprint(bout, "/////\n\n")
 		bout.WriteString(r)
 
 		// ウェイト
-		time.Sleep(100*time.Millisecond)	// 100msec wait
+		time.Sleep(100 * time.Millisecond) // 100msec wait
 		select {
 		case <-cancelCh:
 			log.Warn("Canceling ssh session to " + host)
@@ -323,7 +329,7 @@ func ipaddrParser(ip string) ([]string, error) {
 	var ips []string
 	var idx int
 
-	for _, ip2 := range(strings.Split(m[2], ",")) {
+	for _, ip2 := range strings.Split(m[2], ",") {
 		if len(ip2) == 0 {
 			return nil, errInvalidIP
 		}
@@ -337,19 +343,20 @@ func ipaddrParser(ip string) ([]string, error) {
 			if err != nil || e > 255 {
 				return nil, errInvalidIP
 			}
-			if e<=s {
+			if e <= s {
 				return nil, errInvalidIP
 			}
-			for ; s<=e; s++ {
-				ips = append(ips, ip1 + strconv.Itoa(s))
+			for ; s <= e; s++ {
+				ips = append(ips, ip1+strconv.Itoa(s))
 			}
 		} else {
-			ips = append(ips, ip1 + ip2)
+			ips = append(ips, ip1+ip2)
 		}
 	}
 
 	return ips, nil
 }
+
 //
 //  ------------------------------------------------------------------------------------------------
 //		main
@@ -357,13 +364,13 @@ func ipaddrParser(ip string) ([]string, error) {
 //
 
 type cmdInfo struct {
-	cmd string
+	cmd  string
 	itvl int64
 	iter int
 }
 
 var wg sync.WaitGroup
-var username, passwd string
+var username, passwd, logfile, vars string
 var cmdList []cmdInfo
 var valMap map[string]string
 var duration int64
@@ -381,6 +388,8 @@ func main() {
 	// parse flags
 	flag.StringVar(&username, "u", "admin", "username")
 	flag.StringVar(&passwd, "p", "", "password")
+	flag.StringVar(&logfile, "f", "", "log file")
+	flag.StringVar(&vars, "v", "", "variables (name=value,...)")
 	flag.StringVar(&cmdfile, "c", "commands.txt", "command file")
 	flag.Int64Var(&duration, "d", 0, "duration in seconds (0: indefinitely)")
 	flag.BoolVar(&isIap, "iap", false, "target host is Instant AP")
@@ -390,7 +399,7 @@ func main() {
 
 	// parse to end (cf. https://github.com/golang/go/issues/36744)
 	args := make([]string, 0)
-	for i := len(os.Args)-len(flag.Args())+1; i<len(os.Args); {
+	for i := len(os.Args) - len(flag.Args()) + 1; i < len(os.Args); {
 		if i > 1 && os.Args[i-2] == "--" {
 			break
 		}
@@ -435,7 +444,38 @@ func main() {
 
 	log.Infof("%v hosts specified.", len(iplist))
 
+	//
+	// -v option パース
+	//	format: -v name1=value1,name2=value2,...
+	//	value は "value" 表記も可
+	//
+	valMap = make(map[string]string)
+	valMap0 := make(map[string]bool)		// set
+	vars2 := strings.Trim(vars, " \t\r\n")
+	if vars2 != "" {
+		log.Debugf("v option='%v'", vars2)
+		vars2 += ","
+		re := regexp.MustCompile(`^([\w-]+)="([^"]+)",`)	// name="value",
+		re2 := regexp.MustCompile(`^([\w-]+)=([^,]+),`)		// name=value,
+		for vars2 != "" {
+			m := re.FindStringSubmatch(vars2)
+			if m == nil {
+				m = re2.FindStringSubmatch(vars2)
+				if m == nil {
+					fmt.Println("invalid -v option format: ", vars)
+					os.Exit(1)
+				}
+			}
+			valMap[m[1]] = m[2]
+			valMap0[m[1]] = true
+			vars2 = vars2[len(m[0]):]
+			log.Debugf("VAR: '%v'='%v'", m[1], m[2])
+		}
+	}
+
+	//
 	// commands.txt 読み込み
+	//
 	f, err := os.Open(cmdfile)
 	if err != nil {
 		log.Error("failed to open command file: ", err)
@@ -444,7 +484,6 @@ func main() {
 	defer f.Close()
 
 	sc := bufio.NewScanner(f)
-	valMap = make(map[string]string)
 	var l, itvl, cmd string
 	var i, idx, iter, mulsec, num, def_int int
 	var m []string
@@ -452,9 +491,11 @@ func main() {
 	re2 := regexp.MustCompile(`^\[interval *=? *(\d+[mh]?)\]`)
 	for sc.Scan() {
 		l = strings.Trim(sc.Text(), " \t\r\n")
-		if l == "" || l[0] == '#' { continue }		// skip null lines/comments
+		if l == "" || l[0] == '#' {
+			continue
+		} // skip null lines/comments
 
-		// [interval=30] 指定
+		// [interval=<sec|min|hour>] 指定
 		m = re2.FindStringSubmatch(l)
 		if m != nil {
 			itvl = m[1]
@@ -475,23 +516,25 @@ func main() {
 			continue
 		}
 
-		// VARNAME=VALUE
+		// NAME=VALUE
 		idx = strings.Index(l, "=")
 		if idx != -1 {
-			name  := strings.Trim(l[:idx], " \t\r\n")
+			name := strings.Trim(l[:idx], " \t\r\n")
 			value := strings.Trim(l[idx+1:], " \t\r\n")
 			if len(name) == 0 || len(value) == 0 {
 				log.Error("invalid command format: ", l)
 				os.Exit(1)
 			}
-			valMap[name] = subst(value, log)
+			if !valMap0[name] {	// -v option で指定されている場合、そちらを優先
+				valMap[name] = subst(value, log)
+			}
 			continue
 		}
 
-		l = subst(l, log)	// process $VAR and ${VAR}
+		l = subst(l, log) // process $VAR and ${VAR}
 
 		m = re.FindStringSubmatch(l)
-		if len(m) == 0 {	// interval指定なし
+		if len(m) == 0 { // interval指定なし
 			cmd = l
 			if def_int == 0 {
 				// 一度だけ実行
@@ -527,23 +570,25 @@ func main() {
 		}
 		cmdList = append(cmdList, cmdInfo{cmd: cmd, itvl: int64(i), iter: iter})
 		log.Debugf("cmd[%v]: \"%v\", itvl: %v, iter: %v", num, cmd, i, iter)
-		num ++
+		num++
 	}
 
 	// channel
 	cancelCh := make(chan struct{})
 	completedCh := make(chan struct{})
 	interruptCh := make(chan os.Signal, 1)
-	signal.Notify(interruptCh, os.Interrupt)	// catch Ctrl+C (SIGINT) interrupt
+	signal.Notify(interruptCh, os.Interrupt) // catch Ctrl+C (SIGINT) interrupt
 	fmt.Println("Starting ssh sessions. Press Ctrl+C to abort.")
 
+	//
 	// start ssh session
+	//
 	go func() {
 		for i, ip := range iplist {
 			wg.Add(1)
 			threadname := fmt.Sprintf("Thread%v", i+1)
 			go doSsh(ip, CloneMyLogger(log, threadname), cancelCh)
-			time.Sleep(100*time.Millisecond)		// 100msec delay for each doSsh() thread
+			time.Sleep(100 * time.Millisecond) // 100msec delay for each doSsh() thread
 		}
 		wg.Wait()
 		close(completedCh)
@@ -563,7 +608,7 @@ func main() {
 }
 
 const (
-	mod_TOUPPER = 1<<iota
+	mod_TOUPPER = 1 << iota
 	mod_TOLOWER
 )
 
@@ -601,9 +646,9 @@ func subst(l string, log *MyLogger) string {
 			os.Exit(1)
 		} else {
 			switch {
-			case mod & mod_TOLOWER != 0:
+			case mod&mod_TOLOWER != 0:
 				v = strings.ToLower(v)
-			case mod & mod_TOUPPER != 0:
+			case mod&mod_TOUPPER != 0:
 				v = strings.ToUpper(v)
 			}
 			r.WriteString(v)
