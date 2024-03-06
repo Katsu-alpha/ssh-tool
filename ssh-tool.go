@@ -2,15 +2,20 @@ package main
 
 // TODO:
 // 複数値をもつ変数
-// 自動再接続
-// AP CLI 接続対応
+// 切断時の自動再接続
+// CAP CLI 接続対応
 // 日付をまたいだ場合、ログファイル分割
+// keepalive
 //
 //	History
 //	ver 1.0		initial release
 //	ver 1.1		"[interval]" 指定機能追加
 //	ver 1.2		-u option, DNS name
 //	ver 1.3		-f <logfile> option, -v <name>=<val> option
+//
+//	リリースビルドオプション
+//		go build -ldflags="-s -w" -trimpath .
+//
 
 import (
 	"bufio"
@@ -153,7 +158,7 @@ func doSsh(host string, log *MyLogger, cancelCh chan struct{}) {
 	// 記録ファイル作成
 	var fn string
 	if logfile == "" {
-		fn = "log_" + host + "_" + time.Now().Format("20060102") + ".txt"
+		fn = "log_" + host + "_" + time.Now().Format("20060102_1504") + ".txt"
 	} else {
 		fn = logfile
 	}
@@ -167,9 +172,9 @@ func doSsh(host string, log *MyLogger, cancelCh chan struct{}) {
 	defer bout.Flush()
 	log.Infof("Log file %v created.", fn)
 
-	fmt.Fprintln(bout, "\n<<<<<<<<<")
-	fmt.Fprintln(bout, "<<<<<<<<< START script at", getnowstr())
-	fmt.Fprintln(bout, "<<<<<<<<<")
+	fmt.Fprintln(bout, "\n#########")
+	fmt.Fprintln(bout, "######### START script at", getnowstr())
+	fmt.Fprintln(bout, "#########")
 
 	// schedule 初期化
 	q := make(heapq, 0)
@@ -357,6 +362,25 @@ func ipaddrParser(ip string) ([]string, error) {
 	return ips, nil
 }
 
+func toseconds(s string) int {
+	mulsec := 1
+	if strings.HasSuffix(s, "m") {
+		s = s[:len(s)-1]
+		mulsec = 60
+	} else if strings.HasSuffix(s, "h") {
+		s = s[:len(s)-1]
+		mulsec = 3600
+	} else if strings.HasSuffix(s, "d") {
+		s = s[:len(s)-1]
+		mulsec = 86400
+	}
+	i, err := strconv.Atoi(s)
+	if err != nil {
+		return -1
+	}
+	return i * mulsec
+}
+
 //
 //  ------------------------------------------------------------------------------------------------
 //		main
@@ -370,12 +394,12 @@ type cmdInfo struct {
 }
 
 var wg sync.WaitGroup
-var username, passwd, logfile, vars string
+var username, passwd, logfile string
 var cmdList []cmdInfo
-var valMap map[string]string
 var duration int64
 var isIap, isDebug, isInfo bool
 var cmdfile string
+var valMap map[string]string
 
 func main() {
 	//var hostKey ssh.PublicKey
@@ -385,16 +409,17 @@ func main() {
 	// print banner
 	fmt.Printf("ssh-tool version %v\n", version)
 
+	var vars, durs string
 	// parse flags
 	flag.StringVar(&username, "u", "admin", "username")
-	flag.StringVar(&passwd, "p", "", "password")
-	flag.StringVar(&logfile, "f", "", "log file")
-	flag.StringVar(&vars, "v", "", "variables (name=value,...)")
-	flag.StringVar(&cmdfile, "c", "commands.txt", "command file")
-	flag.Int64Var(&duration, "d", 0, "duration in seconds (0: indefinitely)")
-	flag.BoolVar(&isIap, "iap", false, "target host is Instant AP")
-	flag.BoolVar(&isDebug, "debug", false, "enable debug logs")
-	flag.BoolVar(&isInfo, "info", false, "enable infomational logs")
+	flag.StringVar(&passwd,   "p", "", "password")
+	flag.StringVar(&logfile,  "f", "", "log file")
+	flag.StringVar(&vars,     "v", "", "variables (name=value,...)")
+	flag.StringVar(&cmdfile,  "c", "commands.txt", "command file")
+	flag.StringVar(&durs,     "d", "0", "duration in seconds (0: indefinitely)")
+	flag.BoolVar(&isIap,   "iap",  false, "target host is Instant AP")
+	flag.BoolVar(&isDebug, "debug",false, "enable debug logs")
+	flag.BoolVar(&isInfo,  "info", false, "enable infomational logs")
 	flag.Parse()
 
 	// parse to end (cf. https://github.com/golang/go/issues/36744)
@@ -416,44 +441,27 @@ func main() {
 		log.loglevel = infoLevel
 	}
 
-	if len(args) == 0 {
-		fmt.Println("Please specify device IP address(es).")
+	//
+	// -d option
+	//
+	duration = int64(toseconds(durs))
+	if duration < 0 {
+		fmt.Println("invalid -d option format:", durs)
 		os.Exit(1)
+	} else {
+		log.Debugf("duration: %v seconds", duration)
 	}
-	if passwd == "" {
-		fmt.Print("Enter password: ")
-		p, err := term.ReadPassword(int(os.Stdin.Fd()))
-		if err != nil {
-			log.Fatal(err)
-		}
-		fmt.Println("")
-		passwd = string(p)
-	}
-
-	var iplist []string
-	for _, ip := range args {
-		ips, err := ipaddrParser(ip)
-		if err != nil {
-			// log.Error("invalid IP: ", ip)
-			// os.Exit(1)
-			iplist = append(iplist, ip)
-		} else {
-			iplist = append(iplist, ips...)
-		}
-	}
-
-	log.Infof("%v hosts specified.", len(iplist))
 
 	//
 	// -v option パース
 	//	format: -v name1=value1,name2=value2,...
-	//	value は "value" 表記も可
+	//	value は "value" 表記も可 (シェルで処理されないためには、name=\"value\" と記載する必要あり)
 	//
 	valMap = make(map[string]string)
 	valMap0 := make(map[string]bool)		// set
 	vars2 := strings.Trim(vars, " \t\r\n")
 	if vars2 != "" {
-		log.Debugf("v option='%v'", vars2)
+		log.Debugf("v option: '%v'", vars2)
 		vars2 += ","
 		re := regexp.MustCompile(`^([\w-]+)="([^"]+)",`)	// name="value",
 		re2 := regexp.MustCompile(`^([\w-]+)=([^,]+),`)		// name=value,
@@ -472,6 +480,28 @@ func main() {
 			log.Debugf("VAR: '%v'='%v'", m[1], m[2])
 		}
 	}
+
+	//
+	// IPアドレスレンジパース
+	//  表記例: 1.1.1.1-10,15,17,20-30
+	//
+	if len(args) == 0 {
+		fmt.Println("Please specify device IP address(es).")
+		os.Exit(1)
+	}
+	var iplist []string
+	for _, ip := range args {
+		ips, err := ipaddrParser(ip)
+		if err != nil {
+			// log.Error("invalid IP: ", ip)
+			// os.Exit(1)
+			iplist = append(iplist, ip)
+		} else {
+			iplist = append(iplist, ips...)
+		}
+	}
+
+	log.Infof("%v hosts specified.", len(iplist))
 
 	//
 	// commands.txt 読み込み
@@ -573,7 +603,20 @@ func main() {
 		num++
 	}
 
-	// channel
+	//
+	// パスワード入力
+	//
+	if passwd == "" {
+		fmt.Print("Enter password: ")
+		p, err := term.ReadPassword(int(os.Stdin.Fd()))
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println("")
+		passwd = string(p)
+	}
+
+	// channel 作成
 	cancelCh := make(chan struct{})
 	completedCh := make(chan struct{})
 	interruptCh := make(chan os.Signal, 1)
