@@ -87,9 +87,10 @@ LOOP:
 			break
 		}
 		buf := w.buf.Bytes()
-		if (isIap && bytes.HasSuffix(buf, []byte("# "))) || // IAP prompt
-			(!isIap && bytes.HasSuffix(buf, []byte(") #"))) || // MD prompt
-			(!isIap && bytes.HasSuffix(buf, []byte(") *#"))) { // MD prompt with crashinfo
+		if (isIap && bytes.HasSuffix(buf, []byte("# "))) || 	// IAP prompt
+			(!isIap && bytes.HasSuffix(buf, []byte(") #"))) || 	// MD prompt
+			(!isIap && bytes.HasSuffix(buf, []byte(") *#"))) || // MD prompt with crashinfo
+			(!isIap && bytes.HasSuffix(buf, []byte("] #"))) { 	// MM prompt
 			break
 		}
 	}
@@ -416,7 +417,7 @@ func main() {
 	flag.StringVar(&logfile,  "f", "", "log file")
 	flag.StringVar(&vars,     "v", "", "variables (name=value,...)")
 	flag.StringVar(&cmdfile,  "c", "commands.txt", "command file")
-	flag.StringVar(&durs,     "d", "0", "duration in seconds (0: indefinitely)")
+	flag.StringVar(&durs,     "d", "0", "duration in seconds[no suffix]/minutes[m]/hours[h]/days[d], 0 means indefinite period")
 	flag.BoolVar(&isIap,   "iap",  false, "target host is Instant AP")
 	flag.BoolVar(&isDebug, "debug",false, "enable debug logs")
 	flag.BoolVar(&isInfo,  "info", false, "enable infomational logs")
@@ -448,7 +449,7 @@ func main() {
 	if duration < 0 {
 		fmt.Println("invalid -d option format:", durs)
 		os.Exit(1)
-	} else {
+	} else if duration > 0 {
 		log.Debugf("duration: %v seconds", duration)
 	}
 
