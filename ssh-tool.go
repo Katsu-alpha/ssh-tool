@@ -4,7 +4,7 @@ package main
 // 複数値をもつ変数
 // 切断時の自動再接続
 // CAP CLI 接続対応
-// 日付をまたいだ場合、ログファイル分割
+// 時間・日付をまたいだ場合、ログファイル分割
 // keepalive
 //
 //	History
@@ -171,7 +171,7 @@ func doSsh(host string, log *MyLogger, cancelCh chan struct{}) {
 	defer fout.Close()
 	bout := bufio.NewWriter(fout)
 	defer bout.Flush()
-	log.Infof("Log file %v created.", fn)
+	fmt.Println("Log file: " + fn)
 
 	fmt.Fprintln(bout, "\n#########")
 	fmt.Fprintln(bout, "######### START script at", getnowstr())
@@ -230,22 +230,24 @@ func doSsh(host string, log *MyLogger, cancelCh chan struct{}) {
 		fmt.Fprintln(bout, "Shell(): "+err.Error())
 		return
 	}
-	log.Info("Connection established for " + host)
 	fmt.Println("Connection established for " + host)
 
 	var r string
-	var now, endtime int64
+	var now, endtime, stime int64
 	var sched schedule
 	var cmdinfo cmdInfo
 	var e error
+	var ncmds int
 
 	// wait for prompt
-	_, e = readCli(&w)
+	r, e = readCli(&w)
 	if e != nil {
 		log.Error("readCli: " + e.Error())
 		fmt.Fprintln(bout, "Error: "+e.Error())
 		return
 	}
+
+	fmt.Println("Prompt received: \"" + strings.Trim(r, " \t\r\n") + "\"")
 
 	// send "no paging"
 	if !isIap {
@@ -256,8 +258,11 @@ func doSsh(host string, log *MyLogger, cancelCh chan struct{}) {
 		}
 	}
 
+	fmt.Println("Sending commands... Press Ctrl-C to abort.")
+
+	stime = time.Now().Unix()
 	if duration > 0 {
-		endtime = time.Now().Unix() + duration
+		endtime = stime + duration
 	} else {
 		endtime = 1<<63 - 1 // int64 maximum
 	}
@@ -285,7 +290,7 @@ LOOP:
 			log.Debugf("Sleeping %v seconds...", sched.epoch-now)
 			select {
 			case <-cancelCh:
-				log.Warn("Canceling doSsh()!")
+				log.Warn("Interrupted at command interval")
 				break LOOP
 			case <-time.After(time.Duration(sched.epoch-now) * time.Second):
 			}
@@ -309,17 +314,18 @@ LOOP:
 		fmt.Fprintf(bout, "///// Inteval: %v sec, Iteration: #%v\n", cmdinfo.itvl, sched.ctr)
 		fmt.Fprint(bout, "/////\n\n")
 		bout.WriteString(r)
+		ncmds++
 
-		// ウェイト
-		time.Sleep(100 * time.Millisecond) // 100msec wait
+		// 100msec ウェイト
 		select {
 		case <-cancelCh:
-			log.Warn("Canceling ssh session to " + host)
+			log.Warn("Interrupted at command delay")
 			break LOOP
-		default:
+		case <-time.After(100 * time.Millisecond):
 		}
 	}
 	log.Info("Closing ssh session to " + host)
+	fmt.Printf("%v commands sent in %v seconds.\n", ncmds, time.Now().Unix()-stime)
 }
 
 var errInvalidIP = errors.New("invalid IP address")
@@ -516,9 +522,9 @@ func main() {
 
 	sc := bufio.NewScanner(f)
 	var l, itvl, cmd string
-	var i, idx, iter, mulsec, num, def_int int
+	var i, idx, iter, num, def_int int
 	var m []string
-	re := regexp.MustCompile(`^(\d+[mh]?),|^(\d+[mh]?);(\d+),`)
+	re := regexp.MustCompile(`^(\d+[mh]?),|^(\d+[mh]?);(\d+),`)		// <interval>,<cmd> or <interval>;<iter>,<cmd>
 	re2 := regexp.MustCompile(`^\[interval *=? *(\d+[mh]?)\]`)
 	for sc.Scan() {
 		l = strings.Trim(sc.Text(), " \t\r\n")
@@ -529,21 +535,11 @@ func main() {
 		// [interval=<sec|min|hour>] 指定
 		m = re2.FindStringSubmatch(l)
 		if m != nil {
-			itvl = m[1]
-			mulsec = 1
-			if strings.HasSuffix(itvl, "m") {
-				itvl = itvl[:len(itvl)-1]
-				mulsec = 60
-			} else if strings.HasSuffix(itvl, "h") {
-				itvl = itvl[:len(itvl)-1]
-				mulsec = 3600
-			}
-			def_int, err = strconv.Atoi(itvl)
-			if err != nil {
+			def_int = toseconds(m[1])
+			if def_int < 0 {
 				log.Error("invalid interval format: ", l)
 				os.Exit(1)
 			}
-			def_int *= mulsec
 			continue
 		}
 
@@ -564,8 +560,9 @@ func main() {
 
 		l = subst(l, log) // process $VAR and ${VAR}
 
+		// <interval>,<cmd> or <interval>;<iter>,<cmd>
 		m = re.FindStringSubmatch(l)
-		if len(m) == 0 { // interval指定なし
+		if m == nil { // interval指定なし
 			cmd = l
 			if def_int == 0 {
 				// 一度だけ実行
@@ -584,20 +581,11 @@ func main() {
 				iter, _ = strconv.Atoi(m[3])
 			}
 			cmd = strings.Trim(l[len(m[0]):], " \t\r\n")
-			mulsec = 1
-			if strings.HasSuffix(itvl, "m") {
-				itvl = itvl[:len(itvl)-1]
-				mulsec = 60
-			} else if strings.HasSuffix(itvl, "h") {
-				itvl = itvl[:len(itvl)-1]
-				mulsec = 3600
-			}
-			i, err = strconv.Atoi(itvl)
-			if err != nil {
+			i = toseconds(itvl)
+			if i < 0 {
 				log.Error("invalid interval format: ", l)
 				os.Exit(1)
 			}
-			i *= mulsec
 		}
 		cmdList = append(cmdList, cmdInfo{cmd: cmd, itvl: int64(i), iter: iter})
 		log.Debugf("cmd[%v]: \"%v\", itvl: %v, iter: %v", num, cmd, i, iter)
@@ -622,7 +610,6 @@ func main() {
 	completedCh := make(chan struct{})
 	interruptCh := make(chan os.Signal, 1)
 	signal.Notify(interruptCh, os.Interrupt) // catch Ctrl+C (SIGINT) interrupt
-	fmt.Println("Starting ssh sessions. Press Ctrl+C to abort.")
 
 	//
 	// start ssh session
@@ -632,7 +619,7 @@ func main() {
 			wg.Add(1)
 			threadname := fmt.Sprintf("Thread%v", i+1)
 			go doSsh(ip, CloneMyLogger(log, threadname), cancelCh)
-			time.Sleep(100 * time.Millisecond) // 100msec delay for each doSsh() thread
+			time.Sleep(100 * time.Millisecond) // 100msec delay for each doSsh() thread creation
 		}
 		wg.Wait()
 		close(completedCh)
@@ -644,7 +631,7 @@ func main() {
 			log.Info("All goroutines completed.")
 			return
 		case <-interruptCh:
-			log.Warn("Ctrl-C interrupt. cancelling...")
+			log.Warn("Ctrl-C interrupt. aborting...")
 			close(cancelCh)
 			interruptCh = nil
 		}
