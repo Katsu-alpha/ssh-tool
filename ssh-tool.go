@@ -12,6 +12,7 @@ package main
 //	ver 1.1		"[interval]" 指定機能追加
 //	ver 1.2		-u option, DNS name
 //	ver 1.3		-f <logfile> option, -v <name>=<val> option
+//  ver 1.4		-w option
 //
 //	リリースビルドオプション
 //		go build -ldflags="-s -w" -trimpath .
@@ -37,8 +38,8 @@ import (
 	"golang.org/x/term"
 )
 
-const timeout = 10
-const version = "1.3"
+const timeout = 40		// Read() timeout
+const version = "1.4"
 
 var errReadTimeout = errors.New("rx timed out")
 
@@ -321,7 +322,7 @@ LOOP:
 		case <-cancelCh:
 			log.Warn("Interrupted at command delay")
 			break LOOP
-		case <-time.After(100 * time.Millisecond):
+		case <-time.After(time.Duration(cmdWait) * time.Millisecond):
 		}
 	}
 	log.Info("Closing ssh session to " + host)
@@ -407,6 +408,7 @@ var duration int64
 var isIap, isDebug, isInfo bool
 var cmdfile string
 var valMap map[string]string
+var cmdWait int
 
 func main() {
 	//var hostKey ssh.PublicKey
@@ -424,6 +426,7 @@ func main() {
 	flag.StringVar(&vars,     "v", "", "variables (name=value,...)")
 	flag.StringVar(&cmdfile,  "c", "commands.txt", "command file")
 	flag.StringVar(&durs,     "d", "0", "duration in seconds[no suffix]/minutes[m]/hours[h]/days[d], 0 means indefinite period")
+	flag.IntVar(&cmdWait,  "w", 100, "wait between commands (msec)")
 	flag.BoolVar(&isIap,   "iap",  false, "target host is Instant AP")
 	flag.BoolVar(&isDebug, "debug",false, "enable debug logs")
 	flag.BoolVar(&isInfo,  "info", false, "enable infomational logs")
